@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Praline Picker</title>
+<style>
+  :root {
+    --screen: #ffffff;
+    --btn-border: #3a3a3a;
+    --btn-text: #222222;
+    --arrow-fill: #4a4a4a;
+    --hl: #ffb300;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--screen); overflow: hidden; }
+  body { font-family: Roboto, "Helvetica Neue", Arial, sans-serif; }
+
+  /* ---------- simulator toolbar (not part of the POS) ---------- */
+  #bar { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 16px; background: #f4f4f4; border-bottom: 1px solid #ddd;
+         font: 15px/1.2 -apple-system, system-ui, sans-serif; color: #222; }
+  #bar input { width: 72px; padding: 6px 8px; font: inherit; border: 1px solid #bbb; border-radius: 6px; }
+  #bar button { padding: 7px 14px; font: inherit; border: 1px solid #999; border-radius: 6px; background: #fff; cursor: pointer; }
+  #bar button.primary { background: #222; color: #fff; border-color: #222; }
+  #filled { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+  #filled.full { color: #2e8b3e; }
+
+  #bar { height: auto; min-height: 56px; flex-wrap: wrap; padding: 8px 16px; }
+  #bar button.scan { background: #2e8b3e; border-color: #2e8b3e; color: #fff; font-weight: 600; }
+  #bar button:disabled { opacity: .6; cursor: wait; }
+  #scanMsg { display: none; margin: 8px 16px 0; padding: 8px 10px; border-radius: 6px; background: #fff4d6; border: 1px solid #ffb300;
+             font: 15px/1.35 -apple-system, system-ui, sans-serif; color: #222; }
+  #scanMsg.show { display: block; }
+  #scanMsg.err { background: #fde8e8; border-color: #d33; }
+  #demoMenu { flex-basis: 100%; display: flex; gap: 10px; flex-wrap: wrap; }
+  #demoMenu[hidden] { display: none; }
+  #demoMenu button { display: flex; align-items: center; gap: 10px; padding: 6px 12px 6px 6px; }
+  #demoMenu img { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; }
+  #wrap { position: relative; overflow: hidden; }
+  #shot { display: none; background: #1d1d1d; padding: 6px; }
+  #shot.show { display: block; }
+  #shot img { display: block; margin: 0 auto; max-width: 100%; max-height: 32vh; border-radius: 6px; cursor: zoom-in; }
+  #shot.big img { max-height: 75vh; cursor: zoom-out; }
+  #shot .frame { position: relative; width: fit-content; max-width: 100%; margin: 0 auto; }
+  #loader { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+            background: rgba(0, 0, 0, .55); border-radius: 6px; color: #fff; font: 600 16px/1.3 -apple-system, system-ui, sans-serif; }
+  #shot.busy #loader { display: flex; }
+  #shot.busy img { cursor: progress; }
+  #loader .spin { width: 44px; height: 44px; border-radius: 50%; border: 4px solid rgba(255, 255, 255, .3); border-top-color: #fff;
+                  animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { #loader .spin { animation-duration: 3s; } }
+  /* Fixed-size canvas scaled to fit the window. Fixed coords help the CV side map buttons. */
+  #stage { width: 1270px; height: 707px; position: absolute; left: 50%; top: 50%; background: var(--screen);
+           transform-origin: center center; user-select: none; -webkit-user-select: none; }
+
+  #grid { position: absolute; left: 20px; top: 20px; display: grid;
+          grid-template-columns: repeat(7, 156px); grid-template-rows: repeat(6, 92px);
+          column-gap: 23px; row-gap: 23px; }
+  .pbtn { position: relative; border: 3px solid var(--btn-border); border-radius: 10px; background: transparent;
+          color: var(--btn-text); font: 400 22px/26px Roboto, "Helvetica Neue", Arial, sans-serif;
+          display: flex; align-items: center; justify-content: center; text-align: center;
+          padding: 2px 3px; cursor: default; }
+  .pbtn span { max-height: 78px; overflow: hidden; display: block; }
+  .pbtn:active, .pbtn.flash { background: #d9d9d9; }
+  /* selected state, as on the POS: light grey fill + grey count circle top-right */
+  .pbtn.sel { background: #dcdcdc; }
+  .count { position: absolute; top: -21px; right: -21px; z-index: 2; min-width: 36px; height: 36px; padding: 0 7px; border-radius: 18px;
+           background: #a8a8a8; border: 2px solid #4a4a4a; color: #fff; font: 600 20px/32px Roboto, Arial, sans-serif; text-align: center; }
+  .arrow { position: relative; background: var(--arrow-fill); border: none; border-radius: 10px; display: grid; place-items: center; cursor: pointer; }
+  .arrow svg { width: 50px; height: 34px; }
+
+  /* guide overlay (what the CV result will drive) */
+  .pbtn.hl { border-color: var(--hl); box-shadow: 0 0 0 3px var(--hl), 0 0 18px var(--hl); background: #fff4d6; color: #000; font-weight: 600; }
+  .pbtn.done-hl { opacity: .45; }
+  .badge { position: absolute; top: -16px; left: -16px; min-width: 34px; height: 34px; padding: 0 7px; border-radius: 17px; z-index: 2;
+           box-shadow: 0 2px 6px rgba(0,0,0,.4); background: var(--hl); color: #111; font: 700 22px/34px Roboto, Arial, sans-serif; }
+
+  /* ---------- dev panel (toggle with the D key) ---------- */
+  #dev { position: fixed; right: 12px; top: 12px; width: 360px; max-height: calc(100vh - 24px); overflow: auto; background: #fff; color: #111;
+         border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,.35); padding: 14px; font: 14px/1.4 -apple-system, system-ui, sans-serif; display: none; z-index: 10; }
+  #dev.open { display: block; }
+  #dev h3 { margin: 0 0 8px; font-size: 15px; }
+  #dev label { display: block; margin: 8px 0 4px; font-weight: 600; }
+  #dev textarea { width: 100%; height: 160px; font: 12px/1.4 ui-monospace, Menlo, monospace; }
+  #dev button { margin: 6px 6px 0 0; padding: 6px 10px; border-radius: 6px; border: 1px solid #888; background: #f3f3f3; cursor: pointer; }
+  #dev .err { color: #b00; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <button class="primary scan" id="scanCam">Camera</button>
+  <button class="primary scan" id="scanLib">Gallery</button>
+  <input id="photoCam" type="file" accept="image/*" capture="environment" hidden>
+  <input id="photoLib" type="file" accept="image/*" hidden>
+  <button id="demoBtn">Test images</button>
+  <button id="clear">Clear</button>
+  <div id="demoMenu" hidden></div>
+  <span id="filled"></span>
+</div>
+<div id="shot"><div class="frame">
+  <img id="shotImg" alt="Scanned box">
+  <div id="loader" role="status" aria-live="polite"><div class="spin"></div><span id="loaderText">Analyzing…</span></div>
+</div></div>
+<div id="scanMsg" role="alert"></div>
+<div id="wrap">
+  <div id="stage">
+    <div id="grid"></div>
+  </div>
+</div>
+
+<div id="dev">
+  <h3>Dev panel</h3>
+  <label>Guide plan (JSON: praline name &rarr; count)</label>
+  <textarea id="planInput"></textarea>
+  <div><button id="applyPlan">Show guide</button><button id="clearPlan">Clear guide</button><button id="samplePlan">Sample</button></div>
+  <div class="err" id="planErr"></div>
+  <label>Button map</label>
+  <button id="dumpMap">Copy button coordinates JSON</button>
+</div>
+
+<script>
+// Layout exactly as on the terminal: column-major, 7 cols x 6 rows per page.
+// null = empty slot. "NEXT"/"PREV" = page arrows.
+const PAGES = [
+  [
+    ["Almond Praline", "Aurelia Champagne Truffle", "Baileys Praline", "Bloody Shiraz Gin Praline", "Cafe Latte", null],
+    ["Caramelised Coconut Praline", "Classic Belgian Truffle", "Dark Ganache 73% Praline", "Dark Hazelnut Cluster", "Dark Pistachio Praline", "Dark Raspberry Ganache Praline"],
+    ["Dark Salted Caramel Praline", "Dark Sienna Strawberry Praline", "Dulce de Leche Praline", "Gianduja Truffle", "Golden Leatherwood Honey Praline", "Hazelnut Crisp Praline"],
+    ["Jam Donut Shot Praline", "Lavender Blackcurrant", "Lime Cheesecake Praline", "Liquid Salted Caramel Truffle", "Mandarin and Yuzu Praline", "Milk Hazelnut Cluster"],
+    ["Milk Salted Caramel Praline", "Milk Sienna Strawberry Praline", "Mint Rush Praline", "Native Davidson Plum Praline", "Native Green Ants Finger Lime Praline", "Native Macadamia Caramel Praline"],
+    ["Native Strawberry Gum Passion Praline", "Orange & Cointreau Truffle", "Orange Segment Praline", "Passion Praline", "Pina Colada Praline", "Rose Jelly Praline"],
+    ["Single Malt Whisky Praline", "Tikal Chilli Praline", "Whipped Caramel Mousse Praline", "White Sienna Strawberry Praline", "Yuzu Gin Praline", "NEXT"],
+  ],
+  [
+    ["Zesty Lemon Tart Praline", null, null, null, null, "PREV"],
+    [null, null, null, null, null, null],
+    [null, null, null, null, null, null],
+    [null, null, null, null, null, null],
+    [null, null, null, null, null, null],
+    [null, null, null, null, null, null],
+    [null, null, null, null, null, null],
+  ],
+];
+// The terminal shows "Hazelnut Crisp Pralin" (label truncated on the POS); keep the real name, show the POS label.
+const LABELS = { "Hazelnut Crisp Praline": "Hazelnut Crisp Pralin" };
+const ALL = PAGES.flatMap(p => p.flat()).filter(n => n && n !== "NEXT" && n !== "PREV");
+
+
+const state = {
+  page: 0,
+  boxSize: 16,
+  picks: [],    // praline names in tap order (for Undo)
+  plan: null,   // { name: remainingCount } from the CV result
+};
+
+const countOf = name => state.picks.reduce((n, p) => n + (p === name), 0);
+
+const $ = id => document.getElementById(id);
+const ARROW_R = '<svg viewBox="0 0 50 34"><path d="M3 11h26V3l18 14-18 14v-8H3z" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round"/></svg>';
+const ARROW_L = '<svg viewBox="0 0 50 34"><path d="M47 11H21V3L3 17l18 14v-8h26z" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linejoin="round"/></svg>';
+
+function pageOf(name) { return PAGES.findIndex(p => p.flat().includes(name)); }
+
+function render() {
+  const g = $("grid");
+  g.innerHTML = "";
+  PAGES[state.page].forEach((col, c) => col.forEach((name, r) => {
+    if (!name) return;
+    const el = document.createElement("div");
+    el.style.gridColumn = c + 1;
+    el.style.gridRow = r + 1;
+    if (name === "NEXT" || name === "PREV") {
+      el.className = "arrow";
+      el.innerHTML = name === "NEXT" ? ARROW_R : ARROW_L;
+      el.onclick = () => { state.page += name === "NEXT" ? 1 : -1; render(); };
+      const other = name === "NEXT" ? state.page + 1 : state.page - 1;
+      // Simulator aid: show how many picked pralines sit on the other page.
+      const picked = state.picks.filter(p => pageOf(p) === other).length;
+      if (picked) el.innerHTML += `<div class="count">${picked}</div>`;
+      // Guide: flag the arrow if remaining picks live on the other page.
+      if (state.plan) {
+        const n = Object.entries(state.plan).filter(([k, v]) => v > 0 && pageOf(k) === other).reduce((s, [, v]) => s + v, 0);
+        if (n) { el.classList.add("pbtn", "hl"); el.innerHTML += `<div class="badge">${n}</div>`; }
+      }
+    } else {
+      el.className = "pbtn";
+      el.dataset.name = name;
+      el.innerHTML = `<span>${LABELS[name] || name}</span>`;
+      const n = countOf(name);
+      if (n) { el.classList.add("sel"); el.innerHTML += `<div class="count">${n}</div>`; }
+      if (state.plan && name in state.plan) {
+        const left = state.plan[name];
+        el.classList.add(left > 0 ? "hl" : "done-hl");
+        if (left > 0) el.innerHTML += `<div class="badge">${left}</div>`;
+      }
+    }
+    g.appendChild(el);
+  }));
+  const f = $("filled");
+  f.textContent = state.summary || "";
+  f.classList.toggle("full", !!state.summary && state.summaryOk);
+}
+
+// ---------- toolbar ----------
+$("clear").onclick = () => { state.picks = []; state.plan = null; state.summary = ""; showShot(null); scanMsg(""); render(); };
+
+// ---------- guide API (the CV pipeline calls this) ----------
+// window.posGuide({ "Almond Praline": 3, "Yuzu Gin Praline": 2, ... })
+window.posGuide = plan => {
+  const unknown = Object.keys(plan).filter(k => !ALL.includes(k));
+  if (unknown.length) throw new Error("Unknown praline(s): " + unknown.join(", "));
+  state.plan = { ...plan };
+  state.picks = [];
+  state.boxSize = Math.min(128, Math.max(state.boxSize, Object.values(plan).reduce((a, b) => a + b, 0)));
+  state.page = Object.keys(plan).some(k => pageOf(k) === 0 && plan[k] > 0) ? 0 : pageOf(Object.keys(plan)[0]);
+  render();
+};
+window.posClearGuide = () => { state.plan = null; render(); };
+
+// Button rectangles in stage coordinates (1270x707), for matching against terminal photos.
+window.posButtonMap = () => PAGES.map((p, pi) => p.flatMap((col, c) => col.map((name, r) => name && {
+  page: pi + 1, name, col: c + 1, row: r + 1,
+  x: 20 + c * (156 + 23), y: 20 + r * (92 + 23), w: 156, h: 92,
+})).filter(Boolean));
+
+// ---------- dev panel ----------
+addEventListener("keydown", e => {
+  if (e.key.toLowerCase() === "d" && !["TEXTAREA", "INPUT"].includes(e.target.tagName)) $("dev").classList.toggle("open");
+});
+$("applyPlan").onclick = () => {
+  $("planErr").textContent = "";
+  try { posGuide(JSON.parse($("planInput").value)); }
+  catch (e) { $("planErr").textContent = e.message; }
+};
+$("clearPlan").onclick = () => posClearGuide();
+$("samplePlan").onclick = () => {
+  $("planInput").value = JSON.stringify({
+    "Almond Praline": 2, "Dark Salted Caramel Praline": 3, "Mint Rush Praline": 1, "Passion Praline": 2,
+    "Yuzu Gin Praline": 2, "Gianduja Truffle": 2, "Lavender Blackcurrant": 1, "Rose Jelly Praline": 1, "Zesty Lemon Tart Praline": 2,
+  }, null, 2);
+};
+$("dumpMap").onclick = () => navigator.clipboard?.writeText(JSON.stringify(posButtonMap(), null, 2));
+
+// ---------- scan a box photo (server.py forwards it to Azure) ----------
+function scanMsg(html, err) {
+  const m = $("scanMsg");
+  m.innerHTML = html;
+  m.className = html ? "show" + (err ? " err" : "") : "";
+  fit();
+}
+// Downscale and re-encode on the phone: handles iPhone HEIC, cuts upload size and Azure tokens.
+async function toJpeg(file, maxSide = 2000) {
+  try {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = url; });
+    URL.revokeObjectURL(url);
+    const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.naturalWidth * k);
+    c.height = Math.round(img.naturalHeight * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.88));
+    if (blob) return blob;
+  } catch { /* browser can't decode it: send the original and let Azure try */ }
+  return file;
+}
+
+// The login session cookie (set by the server's password page) goes along automatically.
+function postPhoto(photo) {
+  return fetch("analyze", { method: "POST", body: photo, headers: { "Content-Type": photo.type || "image/jpeg" } });
+}
+
+// Overlay spinner on the photo while Azure works, with a running seconds count.
+let busyTimer = null;
+function busy(on) {
+  clearInterval(busyTimer);
+  $("shot").classList.toggle("busy", on);
+  if (!on) return;
+  const t0 = Date.now();
+  const tick = () => $("loaderText").textContent = `Analyzing… ${Math.round((Date.now() - t0) / 1000)} s`;
+  tick();
+  busyTimer = setInterval(tick, 1000);
+}
+
+let shotUrl = null;
+function showShot(file) {
+  if (shotUrl) URL.revokeObjectURL(shotUrl);
+  shotUrl = file ? URL.createObjectURL(file) : null;
+  $("shot").className = file ? "show" : "";
+  clearInterval(busyTimer);
+  if (file) $("shotImg").src = shotUrl; else $("shotImg").removeAttribute("src");
+  fit();
+}
+$("shotImg").onload = fit;
+$("shotImg").onclick = () => { $("shot").classList.toggle("big"); fit(); };
+const scanBtns = [$("scanCam"), $("scanLib"), $("demoBtn")];
+$("scanCam").onclick = () => $("photoCam").click();
+$("scanLib").onclick = () => $("photoLib").click();
+$("photoCam").onchange = $("photoLib").onchange = e => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (file) scanFile(file);
+};
+
+// Demo photos stored on the server, for showing the app on a computer without a camera.
+const DEMOS = [
+  { src: "demo/shop-box-5x5.jpg", label: "Shop box, 25 pieces" },
+  { src: "demo/shop-box-3x3.jpg", label: "Shop box, 9 pieces" },
+];
+$("demoMenu").innerHTML = DEMOS.map((d, i) =>
+  `<button data-i="${i}"><img src="${d.src}" alt="" loading="lazy">${d.label}</button>`).join("");
+$("demoBtn").onclick = () => { $("demoMenu").hidden = !$("demoMenu").hidden; fit(); };
+$("demoMenu").onclick = async e => {
+  const b = e.target.closest("button[data-i]");
+  if (!b) return;
+  $("demoMenu").hidden = true;
+  try {
+    const r = await fetch(DEMOS[b.dataset.i].src);
+    if (!r.ok) throw new Error(`demo photo not found (HTTP ${r.status})`);
+    scanFile(await r.blob());
+  } catch (err) { scanMsg("Scan failed: " + err.message, true); }
+};
+
+const escapeHtml = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+async function scanFile(file) {
+  scanBtns.forEach(b => b.disabled = true);
+  scanMsg("");
+  state.summary = "";
+  render();
+  try {
+    const photo = await toJpeg(file);
+    showShot(photo);
+    busy(true);
+    const res = await postPhoto(photo);
+    let out;
+    try { out = JSON.parse(await res.text()); }
+    catch { throw new Error(`this page isn't served by the scanner (HTTP ${res.status} from ${location.host || "a local file"}). Open the scanner's web address instead`); }
+    if (!res.ok) throw new Error(out.error || res.statusText);
+    const counts = Object.fromEntries(Object.entries(out.counts).filter(([n]) => ALL.includes(n)));
+    const found = Object.values(counts).reduce((a, b) => a + b, 0);
+    state.plan = null;
+    state.picks = Object.entries(counts).flatMap(([n, c]) => Array(c).fill(n));
+    state.boxSize = Math.min(128, Math.max(1, found, out.rows * out.cols - out.empty));
+    state.page = 0;
+    render();
+    const slots = out.rows * out.cols - out.empty;
+    state.summary = found === slots || !slots
+      ? `${found} pralines · ${out.rows}×${out.cols} box`
+      : `${found} of ${slots} recognised · ${out.rows}×${out.cols} box`;
+    state.summaryOk = !out.unknown.length && (found === slots || !slots);
+    render();
+    if (out.unknown.length)
+      scanMsg(`⚠️ <b>${out.unknown.length} unclear</b>, check by eye and add manually:<br>` +
+        out.unknown.map(u => `• ${u.look ? escapeHtml(u.look) + " " : ""}(row ${u.row}, col ${u.col}, counted from the top-left of the photo)`).join("<br>"));
+  } catch (err) {
+    scanMsg("Scan failed: " + err.message + (location.protocol === "file:" ? " (open the scanner's web address, not the file)" : ""), true);
+  } finally {
+    busy(false);
+    scanBtns.forEach(b => b.disabled = false);
+  }
+};
+
+// ---------- scale stage to window ----------
+function fit() {
+  const barH = $("bar").offsetHeight + $("shot").offsetHeight + $("scanMsg").offsetHeight + ($("scanMsg").offsetHeight ? 8 : 0);
+  $("wrap").style.height = `calc(100% - ${barH}px)`;
+  const s = Math.min(innerWidth / 1270, (innerHeight - barH) / 707);
+  $("stage").style.transform = `translate(-50%, -50%) scale(${s})`;
+}
+addEventListener("resize", fit);
+fit();
+render();
+</script>
+</body>
+</html>

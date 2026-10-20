@@ -1,0 +1,15 @@
+{
+  "name": "praline-pos-scanner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scan a praline box photo and show the counts on a POS grid replica.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "build": "node --check server.js && node -e \"JSON.parse(require('fs').readFileSync('azure/praline-ids.json','utf8'))\" && echo build ok: nothing to compile",
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

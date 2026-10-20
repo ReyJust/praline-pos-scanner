@@ -1,0 +1,218 @@
+{
+  "description": "Praline box reader: identifies every praline in a top-down photo of a gift box.",
+  "baseAnalyzerId": "prebuilt-image",
+  "models": {
+    "completion": "gpt-5.2"
+  },
+  "fieldSchema": {
+    "name": "PralineBox",
+    "description": "A top-down photo of an open chocolate gift box (black or teal box, a short slogan printed on the rim). Pralines sit in a square grid of slots: 1x2, 2x3, 3x3, 4x4, 5x5, 6x6, 7x7, 8x8 or 4x7. Truffle boxes hold round truffles in brown paper cups. A box may contain only dark, only milk, or a mix: never assume a mix. Judge every piece's shell colour on its own, against the black or teal insert.",
+    "fields": {
+      "boxRows": {
+        "type": "number",
+        "method": "generate",
+        "description": "Number of horizontal rows of slots, counted from the TOP edge of the image to the bottom. Count exactly as the image is displayed: never rotate or flip the box in your head, and ignore which way any printed text (e.g. the slogan on the rim) faces."
+      },
+      "boxColumns": {
+        "type": "number",
+        "method": "generate",
+        "description": "Number of vertical columns of slots, counted from the LEFT edge of the image to the right. Count exactly as the image is displayed: never rotate or flip the box in your head, and ignore which way any printed text (e.g. the slogan on the rim) faces."
+      },
+      "shellTones": {
+        "type": "string",
+        "method": "classify",
+        "description": "Look at ALL pieces together before judging any single one: which shell tones appear in this box? Catalogue / studio photos make dark chocolate look medium brown: if no piece is orange-tan, there is no milk.",
+        "enum": [
+          "DarkOnly",
+          "MilkOnly",
+          "DarkAndMilk",
+          "Mixed3"
+        ],
+        "enumDescriptions": {
+          "DarkOnly": "Every brown piece shares the same cool cocoa / reddish-brown tone; nothing is orange-tan.",
+          "MilkOnly": "Every brown piece is warm orange-tan / caramel.",
+          "DarkAndMilk": "Both clearly darker cocoa pieces and lighter orange-tan pieces are present.",
+          "Mixed3": "Dark, milk and white chocolate pieces are all present."
+        }
+      },
+      "pieces": {
+        "type": "array",
+        "method": "generate",
+        "description": "One entry for EVERY slot in the box, scanned row by row starting at the top-left corner of the image as displayed (not the box's own orientation). Include empty slots. Do not merge identical neighbours. For each slot fill topping, shape and shell FIRST, then choose the praline.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "row": {
+              "type": "number",
+              "method": "generate",
+              "description": "1-based row: 1 = the row nearest the TOP edge of the image as displayed."
+            },
+            "column": {
+              "type": "number",
+              "method": "generate",
+              "description": "1-based column: 1 = the column nearest the LEFT edge of the image as displayed."
+            },
+            "topping": {
+              "type": "string",
+              "method": "generate",
+              "description": "What sits on or is printed on the top, in a few words: e.g. 'white salt flakes on corner', 'small brown cacao nibs on corner' (nibs look like tiny chopped nut bits), 'red chilli flakes', 'pistachio half', 'yellow wavy lines', 'gold paint on ribs', 'white almond inlay', 'dark dot', 'pink patch', 'none'."
+            },
+            "shape": {
+              "type": "string",
+              "method": "classify",
+              "description": "Outline of the chocolate BODY seen from above. Ignore anything placed on top (a pistachio, salt, printed lines): a square block with a pistachio on it is still a Cube.",
+              "enum": [
+                "Cube",
+                "Rectangle",
+                "TwistedCube",
+                "Heart",
+                "Cluster",
+                "Oval",
+                "RibbedOval",
+                "Swirl",
+                "Dome",
+                "FacetedGem",
+                "Disc",
+                "TruffleBall",
+                "OrangeSlice",
+                "Other",
+                "Empty"
+              ],
+              "enumDescriptions": {
+                "Cube": "Small square block, flat top.",
+                "Rectangle": "Longer flat block / bar, clearly wider than tall.",
+                "TwistedCube": "Square block with a soft rounded / domed / pillow top and a glossy highlight in the middle; sides may look curved. Seen from above it can look like a dome on a square base. Still a square outline, not round.",
+                "Heart": "Heart outline.",
+                "Cluster": "Lumpy, bumpy pile of whole nuts, no flat top.",
+                "Oval": "Clearly oval / egg / lemon outline, longer than wide, with rounded ends. Square blocks with a rounded top are TwistedCube, not Oval.",
+                "RibbedOval": "Oval crossed by deep parallel ridges.",
+                "Swirl": "Piped spiral rosette.",
+                "Dome": "Perfectly ROUND outline half-sphere (circular from above). If the outline is square with a domed top, use TwistedCube.",
+                "FacetedGem": "Round dome cut into many flat facets.",
+                "Disc": "Perfectly ROUND flat disc with a printed top (gin pralines only). A square or rectangular block with printed lines is a Cube or Rectangle, not a Disc.",
+                "TruffleBall": "Rough rolled ball, usually in a paper cup.",
+                "OrangeSlice": "Candied orange wedge half-dipped in chocolate.",
+                "Other": "None of these.",
+                "Empty": "No piece."
+              }
+            },
+            "shell": {
+              "type": "string",
+              "method": "classify",
+              "description": "Colour of the chocolate body. Must agree with shellTones: in a DarkOnly box every brown piece is Dark; in a MilkOnly box every brown piece is Milk. In mixed boxes compare with neighbours: darker cocoa = Dark, orange-tan = Milk.",
+              "enum": [
+                "Dark",
+                "Milk",
+                "White",
+                "Coloured",
+                "None"
+              ],
+              "enumDescriptions": {
+                "Dark": "Cocoa / chocolate brown with a COOL, neutral or slightly reddish tone, no orange. Can look medium brown under studio light, or near-black in dim light.",
+                "Milk": "Warm ORANGE-tan / caramel / light toffee brown. Clearly orange-leaning, like milk coffee.",
+                "White": "Ivory / cream white chocolate.",
+                "Coloured": "Top mostly covered in a non-brown colour: purple, pink, yellow, gold print, coloured disc.",
+                "None": "Empty slot, or truffle ball whose coating hides the shell."
+              }
+            },
+            "praline": {
+              "type": "string",
+              "method": "classify",
+              "description": "Pick the praline. A distinctive topping or print (see each option) decides on its own, even if shape or shell seem off. Plain pieces with no topping: decide by shape and shell. Any plain square block with no topping: milk = CafeLatte, dark = MandarinAndYuzuPraline. Unknown only if the piece cannot be seen. Return the exact ID.",
+              "enum": [
+                "AlmondPraline",
+                "AureliaChampagneTruffle",
+                "BaileysPraline",
+                "BloodyShirazGinPraline",
+                "CafeLatte",
+                "CaramelisedCoconutPraline",
+                "ClassicBelgianTruffle",
+                "DarkGanache73Praline",
+                "DarkHazelnutCluster",
+                "DarkPistachioPraline",
+                "DarkRaspberryGanachePraline",
+                "DarkSaltedCaramelPraline",
+                "DarkSiennaStrawberryPraline",
+                "DulceDeLechePraline",
+                "GiandujaTruffle",
+                "GoldenLeatherwoodHoneyPraline",
+                "HazelnutCrispPraline",
+                "JamDonutShotPraline",
+                "LavenderBlackcurrant",
+                "LimeCheesecakePraline",
+                "LiquidSaltedCaramelTruffle",
+                "MandarinAndYuzuPraline",
+                "MilkHazelnutCluster",
+                "MilkSaltedCaramelPraline",
+                "MilkSiennaStrawberryPraline",
+                "MintRushPraline",
+                "NativeDavidsonPlumPraline",
+                "NativeGreenAntsFingerLimePraline",
+                "NativeMacadamiaCaramelPraline",
+                "NativeStrawberryGumPassionPraline",
+                "OrangeCointreauTruffle",
+                "OrangeSegmentPraline",
+                "PassionPraline",
+                "PinaColadaPraline",
+                "RoseJellyPraline",
+                "SingleMaltWhiskyPraline",
+                "TikalChilliPraline",
+                "WhippedCaramelMoussePraline",
+                "WhiteSiennaStrawberryPraline",
+                "YuzuGinPraline",
+                "ZestyLemonTartPraline",
+                "Unknown",
+                "Empty"
+              ],
+              "enumDescriptions": {
+                "AlmondPraline": "MILK chocolate oval cup with a white almond-shaped inlay set INTO the top: a visible MILK-BROWN RING surrounds the white part. A piece that is white all over is CaramelisedCoconutPraline.",
+                "AureliaChampagneTruffle": "Rolled truffle ball sitting in a brown PAPER CUP. Only choose a truffle if a paper cup is visible; a lumpy piece without a cup is a hazelnut cluster. Coated in white icing sugar.",
+                "BaileysPraline": "RibbedOval in plain DARK chocolate, no gold or colour on the ridges. This is the default for any dark ribbed oval.",
+                "BloodyShirazGinPraline": "Round flat-topped DISC, dark chocolate, top printed with a BURGUNDY / deep-red CHEVRON (zig-zag) pattern and a row of four dark DOTS across the middle. Often sits in a brown paper cup.",
+                "CafeLatte": "Plain MILK square block with NO topping: cube, pillow top, soft domed top or twisted cube. Default for any plain milk square block.",
+                "CaramelisedCoconutPraline": "WHITE chocolate ALL OVER, oval / lemon shape with a ridge; no brown ring or border anywhere. Any fully white oval piece is this.",
+                "ClassicBelgianTruffle": "Rolled truffle ball sitting in a brown PAPER CUP. Only choose a truffle if a paper cup is visible; a lumpy piece without a cup is a hazelnut cluster. Dusted in reddish-brown cocoa powder.",
+                "DarkGanache73Praline": "DARK RECTANGLE (wider than a cube) with a small pile of BROWN cacao nibs (chunky brown bits) on one corner. White, grey or sparkly bits are salt, not nibs.",
+                "DarkHazelnutCluster": "Round irregular lumpy CLUSTER of whole nuts coated in DARK chocolate (bumpy, no flat top). Same shape as the milk cluster; tell apart by the near-black colour.",
+                "DarkPistachioPraline": "Square DARK chocolate block with a single green-and-purple PISTACHIO nut half placed on top. The only praline with a visible green nut.",
+                "DarkRaspberryGanachePraline": "Any piece with thin YELLOW / GOLD WAVY printed lines across the top, whatever shape it looks like. Dark block underneath.",
+                "DarkSaltedCaramelPraline": "DARK CUBE with salt flakes on one corner: white, grey, translucent or sparkly crystals (can look beige in shop light). Red/orange flakes instead = TikalChilliPraline.",
+                "DarkSiennaStrawberryPraline": "Heart shape, plain glossy DARK chocolate shell, no decoration. Same mould as the milk heart; tell apart by the darker, almost black-brown colour.",
+                "DulceDeLechePraline": "MILK chocolate faceted GEM / geodesic dome: many flat angular facets, like a cut diamond seen from above.",
+                "GiandujaTruffle": "Rolled truffle ball sitting in a brown PAPER CUP. Only choose a truffle if a paper cup is visible; a lumpy piece without a cup is a hazelnut cluster. Crusted in chopped nuts.",
+                "GoldenLeatherwoodHoneyPraline": "RibbedOval whose ridges are clearly painted bright GOLD / YELLOW (obvious gold stripes). Only choose this if gold colour is plainly visible; plain dark ridges = BaileysPraline.",
+                "HazelnutCrispPraline": "MILK / tan block with large amber, orange or gold flakes, shards or flecks scattered on top. Fine pale crumbs instead = ZestyLemonTartPraline.",
+                "JamDonutShotPraline": "ROUND milk piece with sugar crystals sprinkled on top. Plain smooth round milk dome without sugar = NativeGreenAntsFingerLimePraline.",
+                "LavenderBlackcurrant": "Cool muted PURPLE / violet (not pink) GLOSSY colour over the WHOLE piece including the sides, with a concave dipped top. Pink or magenta = RoseJellyPraline.",
+                "LimeCheesecakePraline": "Thin flat RECTANGULAR MILK chocolate bar with thin WHITE diagonal STRIPES / drizzle lines across the top. Same shape as Zesty Lemon Tart, but stripes instead of crumbs.",
+                "LiquidSaltedCaramelTruffle": "Rolled truffle ball sitting in a brown PAPER CUP. Only choose a truffle if a paper cup is visible; a lumpy piece without a cup is a hazelnut cluster. Light tan dusted coat.",
+                "MandarinAndYuzuPraline": "Plain DARK square block with NO topping: cube, pillow top, soft domed top or twisted cube. Default for any plain dark square block. Not an oval.",
+                "MilkHazelnutCluster": "Round irregular lumpy CLUSTER of whole nuts coated in MILK chocolate (bumpy, no flat top), light caramel-brown colour.",
+                "MilkSaltedCaramelPraline": "MILK CUBE with salt flakes on one corner: white, grey, translucent or sparkly crystals. Salt can be tiny and easy to miss: look at the corners of plain milk cubes.",
+                "MilkSiennaStrawberryPraline": "Heart shape, plain glossy MILK chocolate, no decoration. Same mould as the dark and white hearts; tell apart by the medium caramel-brown colour.",
+                "MintRushPraline": "DARK chocolate oval / lemon shape with a raised ridge along the top. Same mould as Caramelised Coconut but in dark chocolate instead of white.",
+                "NativeDavidsonPlumPraline": "Square DARK chocolate block with a patch of deep red-purple PLUM POWDER dusted on one corner of the top.",
+                "NativeGreenAntsFingerLimePraline": "Smooth MILK chocolate HALF-SPHERE dome: perfectly round from above, plain glossy, no topping or pattern.",
+                "NativeMacadamiaCaramelPraline": "MILK chocolate cube with clearly visible raised geometric EMBOSSED LINES (stepped / bracket pattern) moulded into the top. A plain milk cube without lines is CafeLatte.",
+                "NativeStrawberryGumPassionPraline": "DARK chocolate CUBE with a sharp DIAGONAL CREASE across the top, so the top is two angled triangular facets (like a folded roof). Plain, no topping. Not the soft pillow top of Mandarin and Yuzu.",
+                "OrangeCointreauTruffle": "Rolled truffle ball sitting in a brown PAPER CUP. Only choose a truffle if a paper cup is visible; a lumpy piece without a cup is a hazelnut cluster. Covered in rough milk chocolate shards.",
+                "OrangeSegmentPraline": "Candied ORANGE SLICE (bright orange, wedge / half-moon shaped, translucent) HALF-DIPPED in dark chocolate: one end orange, the other end dark. The only piece with visible fruit.",
+                "PassionPraline": "Oval / egg shape in DARK chocolate with a bright YELLOW-green marbled or airbrushed patch covering one end or half of the top.",
+                "PinaColadaPraline": "Thin flat RECTANGULAR DARK chocolate bar with white desiccated COCONUT sprinkled on one side / end of the top.",
+                "RoseJellyPraline": "Flat matte block whose top is warm PINK / magenta, from a small patch to almost the whole top, usually with some milk brown showing. Any pink-topped flat block is this, even if no brown is visible.",
+                "SingleMaltWhiskyPraline": "MILK OVAL with ONE groove line across the top (coffee bean). Needs both: oval outline AND the groove. A plain piece with a square outline is CafeLatte (milk) or MandarinAndYuzuPraline (dark).",
+                "TikalChilliPraline": "Small DARK chocolate CUBE, glossy, with a few tiny reddish-orange CHILLI flakes / seeds on one corner of the top. Same cube as Dark Salted Caramel, but the corner topping is red/orange, not white salt.",
+                "WhippedCaramelMoussePraline": "Any piped SWIRL / rosette (spiral like a meringue), usually milk, often with a small dark dot in the centre. Every swirl is this praline, dot or not.",
+                "WhiteSiennaStrawberryPraline": "Heart shape, plain WHITE chocolate, no decoration.",
+                "YuzuGinPraline": "Round flat-topped DISC, dark chocolate, top printed with a GOLD / YELLOW CHEVRON (zig-zag) pattern and a row of four dark DOTS across the middle. Often sits in a brown paper cup.",
+                "ZestyLemonTartPraline": "Thin flat RECTANGULAR MILK chocolate bar with fine pale-gold biscuit CRUMBS sprinkled on top (smaller and paler than Hazelnut Crisp's amber shards; white stripes instead = Lime Cheesecake).",
+                "Unknown": "Use when the piece is blurred, covered, cut off by the photo edge, or matches none of the descriptions above. Never guess.",
+                "Empty": "The slot has no praline in it."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
