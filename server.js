@@ -30,10 +30,11 @@ const ENDPOINT = (process.env.AZURE_CU_ENDPOINT || "").replace(/\/+$/, "");
 const KEY = process.env.AZURE_CU_KEY || "";
 const PASSWORD = process.env.APP_PASSWORD || "";
 const ANALYZER_ID = process.env.AZURE_CU_ANALYZER_ID || process.env.ANALYZER_ID || "pralineBox";
+const GRID_ANALYZER_ID = process.env.AZURE_CU_GRID_ANALYZER_ID || "pralineGrid";
 const API = "2025-11-01";
 const PORT = Number(process.env.PORT) || 8000;
 const MAX_BYTES = 10 * 1024 * 1024;
-const RATE_LIMIT = 30; // scans per IP per hour
+const RATE_LIMIT = 60; // Azure calls per IP per hour (each scan = recognition + grid locator)
 
 if (!ENDPOINT || !KEY) {
   console.error("Missing AZURE_CU_ENDPOINT or AZURE_CU_KEY.");
@@ -136,8 +137,8 @@ function readBody(req) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---------- Azure Content Understanding ----------
-async function analyze(image, contentType) {
-  const url = `${ENDPOINT}/contentunderstanding/analyzers/${ANALYZER_ID}:analyzeBinary?api-version=${API}`;
+async function analyze(image, contentType, analyzerId = ANALYZER_ID) {
+  const url = `${ENDPOINT}/contentunderstanding/analyzers/${analyzerId}:analyzeBinary?api-version=${API}`;
   const start = await fetch(url, {
     method: "POST",
     headers: { "Ocp-Apim-Subscription-Key": KEY, "Content-Type": contentType },
@@ -171,10 +172,20 @@ function summarise(fields) {
   return {
     rows: Number(val(fields.boxRows)) || 0,
     cols: Number(val(fields.boxColumns)) || 0,
+    slots: slots.map(({ row, col, id, name }) => ({ row, col, id, name })),
     counts,
     unknown: slots.filter(s => s.id === "Unknown").map(({ row, col, look }) => ({ row, col, look })),
     empty: slots.filter(s => s.id === "Empty").length,
   };
+}
+
+// Where the slot grid sits in the photo, in % (read off the ruler the page adds; image fields have no bounding boxes).
+function summariseGrid(fields) {
+  const val = f => f?.valueString ?? f?.valueNumber;
+  const pct = f => Math.min(100, Math.max(0, Number(val(f))));
+  const g = [fields.gridLeft, fields.gridTop, fields.gridRight, fields.gridBottom].map(pct);
+  const grid = g.every(Number.isFinite) && g[2] > g[0] && g[3] > g[1] ? { left: g[0], top: g[1], right: g[2], bottom: g[3] } : null;
+  return { rows: Number(val(fields.boxRows)) || 0, cols: Number(val(fields.boxColumns)) || 0, grid };
 }
 
 // ---------- server ----------
@@ -203,7 +214,7 @@ createServer(async (req, res) => {
     if (req.method === "GET" && path === "/logout")
       return send(res, 303, "", html, { Location: "/", "Set-Cookie": "session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" });
 
-    if (req.method === "POST" && path === "/analyze") {
+    if (req.method === "POST" && (path === "/analyze" || path === "/grid")) {
       if (!sessionOk(req)) return send(res, 401, { error: "Not logged in. Reload the page and enter the password." });
       if (scanLimited(clientIp(req))) return send(res, 429, { error: "Too many scans this hour. Try again later." });
       const type = (req.headers["content-type"] || "").split(";")[0].toLowerCase();
@@ -211,8 +222,8 @@ createServer(async (req, res) => {
       let image;
       try { image = await readBody(req); } catch { return send(res, 413, { error: "Photo is larger than 10 MB." }); }
       if (!image.length) return send(res, 400, { error: "No photo received." });
-      const fields = await analyze(image, type);
-      return send(res, 200, summarise(fields));
+      if (path === "/grid") return send(res, 200, summariseGrid(await analyze(image, type, GRID_ANALYZER_ID)));
+      return send(res, 200, summarise(await analyze(image, type)));
     }
 
     // Everything else (.env, scripts, results) is never served.

@@ -45,6 +45,34 @@
   #loader { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
             background: rgba(0, 0, 0, .55); border-radius: 6px; color: #fff; font: 600 16px/1.3 -apple-system, system-ui, sans-serif; }
   #shot.busy #loader { display: flex; }
+  /* labels beside the photo, joined to a dot on each piece (placed from Azure's grid estimate) */
+  #shotRow { position: relative; display: flex; justify-content: center; align-items: flex-start; gap: 10px; }
+  .lcol { position: relative; flex: 0 0 0; align-self: stretch; }
+  #shot.labelled .lcol { flex-basis: clamp(66px, 15vw, 150px); }
+  #shotRow > .frame { flex: 0 1 auto; min-width: 0; margin: 0; }
+  #labels { position: absolute; inset: 0; pointer-events: none; }
+  #labels .dot { position: absolute; width: 10px; height: 10px; margin: -7px 0 0 -7px; border-radius: 50%;
+                 background: #fff; border: 2px solid #111; box-shadow: 0 0 0 1px rgba(255, 255, 255, .6); }
+  #labels .dot.unk { background: #e33; }
+  #labels .dot.hl { width: 16px; height: 16px; margin: -10px 0 0 -10px; background: var(--hl); }
+  #labels .dot.dim, .tag.dim { opacity: .3; }
+  .tag { position: absolute; left: 0; right: 0; display: flex; align-items: center; padding: 0 6px; border-radius: 4px; overflow: hidden;
+         background: rgba(255, 255, 255, .93); color: #111; white-space: nowrap; cursor: pointer;
+         font: 600 var(--tf, 12px)/1 -apple-system, system-ui, sans-serif; }
+  #lcol .tag { justify-content: flex-end; }
+  .tag span { overflow: hidden; text-overflow: ellipsis; }
+  .tag.unk { background: #e33; color: #fff; }
+  .tag.hl { background: var(--hl); }
+  #leaders { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  #leaders line { stroke: rgba(255, 255, 255, .75); stroke-width: 1.4; }
+  #leaders line.unk { stroke: #e33; }
+  #leaders line.hl { stroke: var(--hl); stroke-width: 2.6; }
+  #leaders line.dim { opacity: .2; }
+  #shot.busy #labels, #shot.busy .lcol > *, #shot.busy #leaders { display: none; }
+  #labelToggle { position: absolute; top: 6px; right: 6px; padding: 4px 8px; border: 0; border-radius: 4px; z-index: 2;
+                 background: rgba(0, 0, 0, .6); color: #fff; font: 600 12px/1 -apple-system, system-ui, sans-serif; cursor: pointer; }
+  .pbtn { cursor: pointer; }
+  .pbtn.focus { border-color: var(--hl); box-shadow: 0 0 0 4px var(--hl); }
   #shot.busy img { cursor: progress; }
   #loader .spin { width: 44px; height: 44px; border-radius: 50%; border: 4px solid rgba(255, 255, 255, .3); border-top-color: #fff;
                   animation: spin .9s linear infinite; }
@@ -98,9 +126,16 @@
   <div id="demoMenu" hidden></div>
   <span id="filled"></span>
 </div>
-<div id="shot"><div class="frame">
-  <img id="shotImg" alt="Scanned box">
-  <div id="loader" role="status" aria-live="polite"><div class="spin"></div><span id="loaderText">Analyzing…</span></div>
+<div id="shot"><div id="shotRow">
+  <div id="lcol" class="lcol"></div>
+  <div class="frame">
+    <img id="shotImg" alt="Scanned box">
+    <div id="labels" aria-hidden="true"></div>
+    <div id="loader" role="status" aria-live="polite"><div class="spin"></div><span id="loaderText">Analyzing…</span></div>
+  </div>
+  <div id="rcol" class="lcol"></div>
+  <svg id="leaders" aria-hidden="true"></svg>
+  <button id="labelToggle" type="button" hidden>Hide labels</button>
 </div></div>
 <div id="scanMsg" role="alert"></div>
 <div id="wrap">
@@ -184,8 +219,9 @@ function render() {
         if (n) { el.classList.add("pbtn", "hl"); el.innerHTML += `<div class="badge">${n}</div>`; }
       }
     } else {
-      el.className = "pbtn";
+      el.className = "pbtn" + (state.focus === name ? " focus" : "");
       el.dataset.name = name;
+      el.onclick = () => setFocus(name);
       el.innerHTML = `<span>${LABELS[name] || name}</span>`;
       const n = countOf(name);
       if (n) { el.classList.add("sel"); el.innerHTML += `<div class="count">${n}</div>`; }
@@ -261,14 +297,47 @@ async function toJpeg(file, maxSide = 2000) {
     c.height = Math.round(img.naturalHeight * k);
     c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
     const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.88));
-    if (blob) return blob;
+    if (!blob) return { display: file, upload: file };
+    return { display: blob, upload: (await new Promise(ok => withRuler(c).toBlob(ok, "image/jpeg", 0.88))) || blob };
   } catch { /* browser can't decode it: send the original and let Azure try */ }
-  return file;
+  return { display: file, upload: file };
+}
+
+// Copy of the photo with a white margin and a 0-100 ruler on all sides. Azure reads slot-grid
+// positions off it far more accurately than it guesses them (labels land on the right pieces).
+function withRuler(photo) {
+  const w = photo.width, h = photo.height, m = Math.max(40, Math.round(0.045 * Math.max(w, h)));
+  const c = document.createElement("canvas");
+  c.width = w + 2 * m; c.height = h + 2 * m;
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+  g.drawImage(photo, m, m);
+  g.strokeStyle = g.fillStyle = "#000";
+  g.lineWidth = Math.max(2, m / 20);
+  g.font = `${Math.round(m * 0.42)}px Helvetica, Arial, sans-serif`;
+  for (let p = 0; p <= 100; p += 5) {
+    const x = m + w * p / 100, y = m + h * p / 100, L = m * (p % 10 ? 0.25 : 0.45);
+    g.beginPath();
+    g.moveTo(x, m - L); g.lineTo(x, m); g.moveTo(x, m + h); g.lineTo(x, m + h + L);
+    g.moveTo(m - L, y); g.lineTo(m, y); g.moveTo(m + w, y); g.lineTo(m + w + L, y);
+    g.stroke();
+    if (p % 10) continue;
+    g.textAlign = "center"; g.textBaseline = "top"; g.fillText(p, x, m * 0.05);
+    g.textBaseline = "bottom"; g.fillText(p, x, c.height - m * 0.05);
+    g.textBaseline = "middle"; g.textAlign = "left"; g.fillText(p, m * 0.05, y);
+    g.textAlign = "right"; g.fillText(p, c.width - m * 0.05, y);
+  }
+  g.lineWidth = 2; g.strokeRect(m - 1, m - 1, w + 2, h + 2);
+  return c;
 }
 
 // The login session cookie (set by the server's password page) goes along automatically.
-function postPhoto(photo) {
-  return fetch("analyze", { method: "POST", body: photo, headers: { "Content-Type": photo.type || "image/jpeg" } });
+function postPhoto(photo, endpoint = "analyze") {
+  return fetch(endpoint, { method: "POST", body: photo, headers: { "Content-Type": photo.type || "image/jpeg" } });
+}
+// Grid position for the on-photo labels (separate call on the ruler copy). Labels are optional: failures are ignored.
+async function fetchGrid(rulerPhoto) {
+  try { const r = await postPhoto(rulerPhoto, "grid"); return r.ok ? await r.json() : null; } catch { return null; }
 }
 
 // Overlay spinner on the photo while Azure works, with a running seconds count.
@@ -284,10 +353,96 @@ function busy(on) {
 }
 
 let shotUrl = null;
+// ---------- labels over the photo ----------
+let lastScan = null;
+const SHORT = {
+  "Almond Praline": "Almond", "Aurelia Champagne Truffle": "Champagne", "Baileys Praline": "Baileys",
+  "Bloody Shiraz Gin Praline": "Shiraz Gin", "Cafe Latte": "Latte", "Caramelised Coconut Praline": "Coconut",
+  "Classic Belgian Truffle": "Belgian", "Dark Ganache 73% Praline": "Ganache 73", "Dark Hazelnut Cluster": "D Cluster",
+  "Dark Pistachio Praline": "Pistachio", "Dark Raspberry Ganache Praline": "Raspberry", "Dark Salted Caramel Praline": "D Salt Car",
+  "Dark Sienna Strawberry Praline": "D Sienna", "Dulce de Leche Praline": "Dulce", "Gianduja Truffle": "Gianduja",
+  "Golden Leatherwood Honey Praline": "Honey", "Hazelnut Crisp Praline": "Hazel Crisp", "Jam Donut Shot Praline": "Jam Donut",
+  "Lavender Blackcurrant": "Lavender", "Lime Cheesecake Praline": "Lime Cake", "Liquid Salted Caramel Truffle": "Liquid Car",
+  "Mandarin and Yuzu Praline": "Mandarin", "Milk Hazelnut Cluster": "M Cluster", "Milk Salted Caramel Praline": "M Salt Car",
+  "Milk Sienna Strawberry Praline": "M Sienna", "Mint Rush Praline": "Mint", "Native Davidson Plum Praline": "Plum",
+  "Native Green Ants Finger Lime Praline": "Green Ants", "Native Macadamia Caramel Praline": "Macadamia",
+  "Native Strawberry Gum Passion Praline": "Straw Gum", "Orange & Cointreau Truffle": "Cointreau", "Orange Segment Praline": "Orange",
+  "Passion Praline": "Passion", "Pina Colada Praline": "Pina Colada", "Rose Jelly Praline": "Rose", "Single Malt Whisky Praline": "Whisky",
+  "Tikal Chilli Praline": "Chilli", "Whipped Caramel Mousse Praline": "Mousse", "White Sienna Strawberry Praline": "W Sienna",
+  "Yuzu Gin Praline": "Yuzu Gin", "Zesty Lemon Tart Praline": "Lemon Tart",
+};
+const shortName = n => SHORT[n] || n.replace(/ Praline$/, "");
+
+// Tap a POS button (or a label) to light up that praline's pieces on the photo; tap again to clear.
+function setFocus(name) {
+  state.focus = state.focus === name ? null : name;
+  if (state.focus && pageOf(state.focus) !== state.page) state.page = pageOf(state.focus);
+  render();
+  drawLabels();
+}
+
+let labelsOff = false;
+// Labels sit in columns beside the photo, each joined by a line to a dot on its piece.
+function drawLabels() {
+  const out = lastScan, ok = !!(out && out.grid && out.slots?.length);
+  $("labelToggle").hidden = !ok;
+  $("shot").classList.toggle("labelled", ok && !labelsOff);
+  $("labels").innerHTML = $("lcol").innerHTML = $("rcol").innerHTML = $("leaders").innerHTML = "";
+  if (!ok || labelsOff) return;
+
+  const { left, top, right, bottom } = out.grid;
+  const cw = (right - left) / out.cols, ch = (bottom - top) / out.rows, mid = (left + right) / 2;
+  const look = Object.fromEntries((out.unknown || []).map(u => [`${u.row},${u.col}`, u.look]));
+  let alt = 0;
+  const pieces = out.slots.filter(p => p.row && p.col && p.id !== "Empty").map(p => {
+    const cx = left + (p.col - .5) * cw, cy = top + (p.row - .5) * ch;
+    const side = Math.abs(cx - mid) < cw * .25 ? (alt++ % 2 ? "r" : "l") : cx < mid ? "l" : "r";
+    const state_ = !state.focus ? "" : p.name === state.focus ? " hl" : " dim";
+    return { ...p, cx, cy, side, cls: (p.name ? "" : " unk") + state_, look: look[`${p.row},${p.col}`] };
+  });
+  $("labels").innerHTML = pieces.map(p => `<div class="dot${p.cls}" style="left:${p.cx}%;top:${p.cy}%"></div>`).join("");
+
+  const row = $("shotRow").getBoundingClientRect(), img = $("shotImg").getBoundingClientRect();
+  const H = img.height, y0 = img.top - row.top, x0 = img.left - row.left;
+  let lines = "";
+  for (const side of ["l", "r"]) {
+    const col = $(side === "l" ? "lcol" : "rcol"), cr = col.getBoundingClientRect();
+    const items = pieces.filter(p => p.side === side).sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+    if (!items.length) continue;
+    const th = Math.max(12, Math.min(22, (H - 2 * (items.length - 1)) / items.length));
+    col.style.setProperty("--tf", `${Math.max(8, Math.min(13, th * .62)).toFixed(1)}px`);
+    // Place each tag at its piece's height, then push apart so none overlap.
+    const ys = [];
+    items.forEach((p, i) => ys.push(Math.max(p.cy / 100 * H - th / 2, i ? ys[i - 1] + th + 2 : 0)));
+    for (let i = items.length - 1, limit = H; i >= 0; i--) { ys[i] = Math.min(ys[i], limit - th); limit = ys[i] - 2; }
+    items.forEach((p, i) => {
+      const tag = document.createElement("div");
+      tag.className = "tag" + p.cls;
+      tag.style.top = `${y0 - (cr.top - row.top) + ys[i]}px`;
+      tag.style.height = `${th}px`;
+      tag.innerHTML = `<span>${p.name ? escapeHtml(shortName(p.name)) : "? check"}</span>`;
+      tag.title = p.name || `Unclear${p.look ? ": " + p.look : ""} (row ${p.row}, col ${p.col})`;
+      if (p.name) tag.onclick = () => setFocus(p.name);
+      col.appendChild(tag);
+      const lx = side === "l" ? cr.right - row.left : cr.left - row.left;
+      lines += `<line class="${p.cls.trim()}" x1="${lx}" y1="${y0 + ys[i] + th / 2}" x2="${x0 + p.cx / 100 * img.width}" y2="${y0 + p.cy / 100 * H}"/>`;
+    });
+  }
+  $("leaders").innerHTML = lines;
+}
+$("labelToggle").onclick = e => {
+  e.stopPropagation();
+  labelsOff = !labelsOff;
+  $("labelToggle").textContent = labelsOff ? "Show labels" : "Hide labels";
+  fit();
+};
+
 function showShot(file) {
   if (shotUrl) URL.revokeObjectURL(shotUrl);
   shotUrl = file ? URL.createObjectURL(file) : null;
   $("shot").className = file ? "show" : "";
+  lastScan = null;
+  state.focus = null;
   clearInterval(busyTimer);
   if (file) $("shotImg").src = shotUrl; else $("shotImg").removeAttribute("src");
   fit();
@@ -331,9 +486,10 @@ async function scanFile(file) {
   render();
   try {
     const photo = await toJpeg(file);
-    showShot(photo);
+    showShot(photo.display);
     busy(true);
-    const res = await postPhoto(photo);
+    const gridReq = photo.upload !== photo.display ? fetchGrid(photo.upload) : Promise.resolve(null);
+    const res = await postPhoto(photo.display);
     let out;
     try { out = JSON.parse(await res.text()); }
     catch { throw new Error(`this page isn't served by the scanner (HTTP ${res.status} from ${location.host || "a local file"}). Open the scanner's web address instead`); }
@@ -350,6 +506,15 @@ async function scanFile(file) {
       ? `${found} pralines · ${out.rows}×${out.cols} box`
       : `${found} of ${slots} recognised · ${out.rows}×${out.cols} box`;
     state.summaryOk = !out.unknown.length && (found === slots || !slots);
+    lastScan = out;
+    fit();
+    gridReq.then(g => {
+      // Only place labels if this is still the current scan and the locator agrees on the grid size.
+      if (lastScan !== out || !g?.grid) return;
+      if (g.rows !== out.rows || g.cols !== out.cols) return;
+      out.grid = g.grid;
+      fit();
+    });
     render();
     if (out.unknown.length)
       scanMsg(`⚠️ <b>${out.unknown.length} unclear</b>, check by eye and add manually:<br>` +
@@ -364,6 +529,7 @@ async function scanFile(file) {
 
 // ---------- scale stage to window ----------
 function fit() {
+  drawLabels();
   const barH = $("bar").offsetHeight + $("shot").offsetHeight + $("scanMsg").offsetHeight + ($("scanMsg").offsetHeight ? 8 : 0);
   $("wrap").style.height = `calc(100% - ${barH}px)`;
   const s = Math.min(innerWidth / 1270, (innerHeight - barH) / 707);

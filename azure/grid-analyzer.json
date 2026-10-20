@@ -1,0 +1,43 @@
+{
+  "description": "Praline box locator: finds where the grid of praline slots sits in the photo, using the printed ruler.",
+  "baseAnalyzerId": "prebuilt-image",
+  "models": {
+    "completion": "gpt-5.2"
+  },
+  "fieldSchema": {
+    "name": "PralineGrid",
+    "description": "A top-down photo of an open praline box, with a white margin and a 0-100 RULER printed on all four sides (0 = photo's left/top edge, 100 = right/bottom edge). The ruler is not part of the box.",
+    "fields": {
+      "boxRows": {
+        "type": "number",
+        "method": "generate",
+        "description": "Number of horizontal rows of slots, counted from the TOP edge of the image to the bottom. Count exactly as the image is displayed: never rotate or flip the box in your head, and ignore which way any printed text (e.g. the slogan on the rim) faces."
+      },
+      "boxColumns": {
+        "type": "number",
+        "method": "generate",
+        "description": "Number of vertical columns of slots, counted from the LEFT edge of the image to the right. Count exactly as the image is displayed: never rotate or flip the box in your head, and ignore which way any printed text (e.g. the slogan on the rim) faces."
+      },
+      "gridLeft": {
+        "type": "number",
+        "method": "generate",
+        "description": "Position of the LEFT edge of the grid of praline slots (outer edge of the outermost slots, not the box rim), as a percentage 0-100 of the image width, measured from the left of the image as displayed. The photo has a white margin with a 0-100 RULER on all four sides: 0 = photo's left/top edge, 100 = right/bottom edge. Read the value off the ruler."
+      },
+      "gridTop": {
+        "type": "number",
+        "method": "generate",
+        "description": "Position of the TOP edge of the grid of praline slots (outer edge of the outermost slots, not the box rim), as a percentage 0-100 of the image height, measured from the top of the image as displayed. The photo has a white margin with a 0-100 RULER on all four sides: 0 = photo's left/top edge, 100 = right/bottom edge. Read the value off the ruler."
+      },
+      "gridRight": {
+        "type": "number",
+        "method": "generate",
+        "description": "Position of the RIGHT edge of the grid of praline slots (outer edge of the outermost slots, not the box rim), as a percentage 0-100 of the image width, measured from the left of the image as displayed. The photo has a white margin with a 0-100 RULER on all four sides: 0 = photo's left/top edge, 100 = right/bottom edge. Read the value off the ruler."
+      },
+      "gridBottom": {
+        "type": "number",
+        "method": "generate",
+        "description": "Position of the BOTTOM edge of the grid of praline slots (outer edge of the outermost slots, not the box rim), as a percentage 0-100 of the image height, measured from the top of the image as displayed. The photo has a white margin with a 0-100 RULER on all four sides: 0 = photo's left/top edge, 100 = right/bottom edge. Read the value off the ruler."
+      }
+    }
+  }
+}

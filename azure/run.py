@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 AZ = ROOT / "azure"
 API = "2025-11-01"
 ANALYZER_ID = "pralineBox"
+GRID_ANALYZER_ID = "pralineGrid"
 
 
 def load_env():
@@ -61,17 +62,44 @@ def wait(headers):
 
 
 def upload():
-    schema = (AZ / "praline-analyzer.json").read_bytes()
-    s, h, body = call("PUT", f"/analyzers/{ANALYZER_ID}", schema)
-    if s == 409:  # already exists: replace it
-        call("DELETE", f"/analyzers/{ANALYZER_ID}")
-        s, h, body = call("PUT", f"/analyzers/{ANALYZER_ID}", schema)
-    if s >= 300:
-        sys.exit(f"Upload failed ({s}):\n{body}")
-    res = wait(h)
-    if res.get("status") != "Succeeded":
-        sys.exit(f"Analyzer build failed:\n{json.dumps(res, indent=2)[:3000]}")
-    print(f"Analyzer '{ANALYZER_ID}' ready.")
+    # Recognition analyzer (clean photo) and grid locator (photo with ruler, used for on-photo labels).
+    for analyzer_id, schema_file in ((ANALYZER_ID, "praline-analyzer.json"), (GRID_ANALYZER_ID, "grid-analyzer.json")):
+        schema = (AZ / schema_file).read_bytes()
+        s, h, body = call("PUT", f"/analyzers/{analyzer_id}", schema)
+        if s == 409:  # already exists: replace it
+            call("DELETE", f"/analyzers/{analyzer_id}")
+            s, h, body = call("PUT", f"/analyzers/{analyzer_id}", schema)
+        if s >= 300:
+            sys.exit(f"Upload of {analyzer_id} failed ({s}):\n{body}")
+        res = wait(h)
+        if res.get("status") != "Succeeded":
+            sys.exit(f"Analyzer {analyzer_id} build failed:\n{json.dumps(res, indent=2)[:3000]}")
+        print(f"Analyzer '{analyzer_id}' ready.")
+
+
+def add_ruler(jpeg_bytes):
+    """Same 0-100 ruler margin the web page adds for the grid locator (kept for experiments)."""
+    import io
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    im = ImageOps.exif_transpose(Image.open(io.BytesIO(jpeg_bytes))).convert("RGB")
+    im.thumbnail((2000, 2000))
+    w, h = im.size
+    m = max(40, round(0.045 * max(w, h)))
+    out = Image.new("RGB", (w + 2 * m, h + 2 * m), "white")
+    out.paste(im, (m, m))
+    d = ImageDraw.Draw(out)
+    f = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", round(m * 0.42))
+    for p in range(0, 101, 5):
+        x, y, L = m + w * p / 100, m + h * p / 100, m * (0.45 if p % 10 == 0 else 0.25)
+        for a, b in [((x, m - L), (x, m)), ((x, m + h), (x, m + h + L)), ((m - L, y), (m, y)), ((m + w, y), (m + w + L, y))]:
+            d.line([a, b], fill="black", width=max(2, m // 20))
+        if p % 10 == 0:
+            for tx, ty, anc in [(x, m * .05, "mt"), (x, out.height - m * .05, "mb"), (m * .05, y, "lm"), (out.width - m * .05, y, "rm")]:
+                d.text((tx, ty), str(p), fill="black", font=f, anchor=anc)
+    d.rectangle([m - 1, m - 1, m + w, m + h], outline="black", width=2)
+    buf = io.BytesIO()
+    out.save(buf, "JPEG", quality=88)
+    return buf.getvalue()
 
 
 def image_bytes(path):
@@ -122,7 +150,15 @@ def score(name, dims, pieces, key):
                 unknown += have == "Unknown"
                 wrong.append(f"  r{r+1}c{c+1}: got {have or 'MISSING'} ({p.get('shell')}/{p.get('shape')}/'{p.get('topping')}'), want {want}")
     total = rows * cols
-    print(f"\n{name}: {ok}/{total} correct  ({unknown} Unknown, {total-ok-unknown} wrong)  grid {dims[0]}x{dims[1]} (want {rows}x{cols})")
+    # What the POS needs: per-praline counts, regardless of which slot they were read in.
+    want_counts = Counter(x for row in key for x in row if x)
+    got_counts = Counter(p.get("praline") for p in pieces)
+    count_ok = sum(min(n, got_counts[k]) for k, n in want_counts.items())
+    count_total = sum(want_counts.values())
+    print(f"\n{name}: counts {count_ok}/{count_total} right | slots {ok}/{total} ({unknown} Unknown, {total-ok-unknown} wrong)  grid {dims[0]}x{dims[1]} (want {rows}x{cols})")
+    score.counts = getattr(score, "counts", [0, 0])
+    score.counts[0] += count_ok
+    score.counts[1] += count_total
     print("\n".join(wrong) if wrong else "  all correct")
     return ok, total
 
@@ -145,7 +181,9 @@ def main():
             for n, c in counts.most_common():
                 print(f"  {c:3}  {n}")
     if tot:
-        print(f"\nOVERALL {tot_ok}/{tot} = {100*tot_ok/tot:.0f}%")
+        c_ok, c_tot = score.counts
+        print(f"\nOVERALL counts (what the POS needs): {c_ok}/{c_tot} = {100*c_ok/c_tot:.0f}%")
+        print(f"OVERALL slots (exact positions):     {tot_ok}/{tot} = {100*tot_ok/tot:.0f}%")
 
 
 if __name__ == "__main__":
