@@ -6,13 +6,15 @@
 //
 //   AZURE_CU_ENDPOINT   https://<resource>.services.ai.azure.com
 //   AZURE_CU_KEY        Content Understanding key
-//   APP_PASSWORD        password staff type once on their phone (required in production)
+//   APP_PASSWORD        password for scanning (required in production). The page itself is public;
+//                       visitors get one free test scan, after that scans need the password.
+//   FREE_SCANS_PER_DAY  optional, cap on free test scans across all visitors per day (default 20, 0 = none)
 //   AZURE_CU_ANALYZER_ID  optional, defaults to pralineBox
 //   PORT                set by the host
 
 import { createServer } from "node:http";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
-import { timingSafeEqual, createHash, createHmac } from "node:crypto";
+import { timingSafeEqual, createHash, createHmac, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,12 +37,13 @@ const API = "2025-11-01";
 const PORT = Number(process.env.PORT) || 8000;
 const MAX_BYTES = 10 * 1024 * 1024;
 const RATE_LIMIT = 60; // Azure calls per IP per hour (each scan = recognition + grid locator)
+const FREE_PER_DAY = Number(process.env.FREE_SCANS_PER_DAY ?? 20);
 
 if (!ENDPOINT || !KEY) {
   console.error("Missing AZURE_CU_ENDPOINT or AZURE_CU_KEY.");
   process.exit(1);
 }
-if (!PASSWORD) console.warn("APP_PASSWORD is not set: anyone who can reach this server can run scans.");
+if (!PASSWORD) console.warn("APP_PASSWORD is not set: anyone who can reach this server can run unlimited scans.");
 
 const PAGE = readFileSync(join(ROOT, "index.html"));
 // Demo photos (demo/*.jpg) for trying the app without a camera. Read once; only these names are served.
@@ -67,13 +70,18 @@ function sessionOk(req) {
   const want = Buffer.from(sign(m[1])), got = Buffer.from(m[2]);
   return want.length === got.length && timingSafeEqual(want, got);
 }
+const cookie = (req, name, value, maxAge) => {
+  const https = req.headers["x-forwarded-proto"] === "https" || req.socket.encrypted;
+  return `${name}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${https ? "; Secure" : ""}`;
+};
 function sessionCookie(req) {
   const exp = Date.now() + SESSION_DAYS * 86400_000;
-  const https = req.headers["x-forwarded-proto"] === "https" || req.socket.encrypted;
-  return `session=${exp}.${sign(exp)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_DAYS * 86400}${https ? "; Secure" : ""}`;
+  return cookie(req, "session", `${exp}.${sign(exp)}`, SESSION_DAYS * 86400);
 }
 
-const clientIp = req => (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+// The rightmost X-Forwarded-For entry is the one added by the host's proxy; entries to its
+// left come from the client and can be forged.
+const clientIp = req => (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",").pop().trim().replace(/^::ffff:/, "");
 function limiter(max, windowMs) {
   const hits = new Map(); // ip -> [timestamps]
   return ip => {
@@ -87,6 +95,47 @@ function limiter(max, windowMs) {
 const scanLimited = limiter(RATE_LIMIT, 3600_000);
 const loginLimited = limiter(10, 15 * 60_000); // slows down password guessing
 
+// ---------- free test scan ----------
+// Without the password, a visitor gets one scan if ALL of these hold:
+//   - this browser has no "trial used" cookie (signed, so it can't be forged)
+//   - this IP had no free scan in the last 24 h (stops clearing cookies / private windows)
+//   - fewer than FREE_SCANS_PER_DAY free scans were given out today, across everyone
+// Granting a trial issues a ticket cookie good for one scan (one recognition + one grid call)
+// within 3 minutes. Counters live in memory and reset on restart; the Azure budget is the backstop.
+const TRIAL_KEY = sha(`trial:${KEY}`);
+const trialSig = v => createHmac("sha256", TRIAL_KEY).update(v).digest("base64url");
+const TRIAL_DAYS = 365;
+function trialUsed(req) {
+  const m = (req.headers.cookie || "").match(/(?:^|;\s*)trial=(\d+)\.([\w-]+)/);
+  if (!m) return false;
+  const want = Buffer.from(trialSig(m[1])), got = Buffer.from(m[2]);
+  return want.length === got.length && timingSafeEqual(want, got);
+}
+const trialIps = new Map(); // ip -> time of last free scan
+let freeDay = "", freeToday = 0;
+const tickets = new Map(); // id -> { exp, analyze, grid } (calls already spent)
+function grantTrial(req) {
+  const now = Date.now(), ip = clientIp(req), day = new Date().toISOString().slice(0, 10);
+  if (day !== freeDay) { freeDay = day; freeToday = 0; }
+  for (const [k, t] of trialIps) if (now - t > 86400_000) trialIps.delete(k);
+  for (const [k, t] of tickets) if (t.exp < now) tickets.delete(k);
+  if (trialUsed(req) || trialIps.has(ip) || freeToday >= FREE_PER_DAY) return null;
+  freeToday++;
+  trialIps.set(ip, now);
+  const id = randomBytes(18).toString("base64url");
+  tickets.set(id, { exp: now + 180_000, analyze: false, grid: false });
+  return [cookie(req, "ticket", id, 180), cookie(req, "trial", `${now}.${trialSig(String(now))}`, TRIAL_DAYS * 86400)];
+}
+// Spends this request's call on the ticket; false if there is no valid ticket or it's already spent.
+function useTicket(req, kind) {
+  const id = (req.headers.cookie || "").match(/(?:^|;\s*)ticket=([\w-]+)/)?.[1];
+  const t = id && tickets.get(id);
+  if (!t || t.exp < Date.now() || t[kind]) return false;
+  t[kind] = true;
+  if (t.analyze && t.grid) tickets.delete(id);
+  return true;
+}
+
 function send(res, code, body, type = "application/json", extra = {}) {
   const data = type === "application/json" ? JSON.stringify(body) : body;
   res.writeHead(code, {
@@ -99,26 +148,6 @@ function send(res, code, body, type = "application/json", extra = {}) {
   });
   res.end(data);
 }
-
-const loginPage = error => `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Praline Scanner</title>
-<style>
-  :root { color-scheme: light; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f4f4f4; font: 16px/1.4 -apple-system, system-ui, sans-serif; color: #222; }
-  form { width: min(320px, calc(100vw - 32px)); background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 24px; }
-  h1 { margin: 0 0 16px; font-size: 20px; }
-  input { width: 100%; box-sizing: border-box; padding: 10px 12px; font: inherit; border: 1px solid #bbb; border-radius: 6px; }
-  button { margin-top: 12px; width: 100%; padding: 10px; font: inherit; font-weight: 600; color: #fff; background: #2e8b3e; border: 0; border-radius: 6px; cursor: pointer; }
-  .err { margin: 0 0 12px; color: #b00; }
-</style></head><body>
-<form method="post" action="/login">
-  <h1>Praline Scanner</h1>
-  ${error ? `<p class="err">${error}</p>` : ""}
-  <input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
-  <button type="submit">Enter</button>
-</form>
-</body></html>`;
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -194,28 +223,33 @@ createServer(async (req, res) => {
   try {
     const html = "text/html; charset=utf-8";
 
-    if (req.method === "GET" && (path === "/" || path === "/index.html"))
-      return sessionOk(req) ? send(res, 200, PAGE, html) : send(res, 200, loginPage(), html);
+    if (req.method === "GET" && (path === "/" || path === "/index.html")) return send(res, 200, PAGE, html);
 
-    if (req.method === "GET" && DEMOS.has(path)) {
-      if (!sessionOk(req)) return send(res, 401, { error: "Not logged in." });
-      return send(res, 200, DEMOS.get(path), "image/jpeg");
+    if (req.method === "GET" && DEMOS.has(path)) return send(res, 200, DEMOS.get(path), "image/jpeg");
+
+    // Called by the page before each scan: go ahead (logged in, or a free scan was granted) or ask for the password.
+    if (req.method === "POST" && path === "/access") {
+      if (sessionOk(req)) return send(res, 200, { access: "session" });
+      const set = grantTrial(req);
+      if (set) return send(res, 200, { access: "trial" }, "application/json", { "Set-Cookie": set });
+      return send(res, 401, { needPassword: true });
     }
 
     if (req.method === "POST" && path === "/login") {
-      if (!PASSWORD) return send(res, 303, "", html, { Location: "/" });
-      if (loginLimited(clientIp(req))) return send(res, 429, loginPage("Too many attempts. Wait 15 minutes."), html);
+      if (!PASSWORD) return send(res, 200, { ok: true });
+      if (loginLimited(clientIp(req))) return send(res, 429, { error: "Too many attempts. Wait 15 minutes." });
       let form;
-      try { form = new URLSearchParams((await readBody(req)).toString("utf8")); } catch { return send(res, 413, loginPage("Request too large."), html); }
-      if (!passwordOk(form.get("password"))) return send(res, 401, loginPage("Wrong password."), html);
-      return send(res, 303, "", html, { Location: "/", "Set-Cookie": sessionCookie(req) });
+      try { form = new URLSearchParams((await readBody(req)).toString("utf8")); } catch { return send(res, 413, { error: "Request too large." }); }
+      if (!passwordOk(form.get("password"))) return send(res, 401, { error: "Wrong password." });
+      return send(res, 200, { ok: true }, "application/json", { "Set-Cookie": sessionCookie(req) });
     }
 
     if (req.method === "GET" && path === "/logout")
-      return send(res, 303, "", html, { Location: "/", "Set-Cookie": "session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0" });
+      return send(res, 303, "", html, { Location: "/", "Set-Cookie": cookie(req, "session", "", 0) });
 
     if (req.method === "POST" && (path === "/analyze" || path === "/grid")) {
-      if (!sessionOk(req)) return send(res, 401, { error: "Not logged in. Reload the page and enter the password." });
+      if (!sessionOk(req) && !useTicket(req, path.slice(1)))
+        return send(res, 401, { needPassword: true, error: "Enter the password to scan." });
       if (scanLimited(clientIp(req))) return send(res, 429, { error: "Too many scans this hour. Try again later." });
       const type = (req.headers["content-type"] || "").split(";")[0].toLowerCase();
       if (!ALLOWED_TYPES.has(type)) return send(res, 415, { error: `Unsupported image type: ${type || "none"}` });
